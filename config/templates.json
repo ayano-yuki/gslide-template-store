@@ -1,0 +1,12 @@
+{
+  "template-a": {
+    "displayName": "Template A",
+    "description": "用途A向けテンプレート",
+    "source": "https://docs.google.com/presentation/d/SLIDES_ID_A/edit"
+  },
+  "template-b": {
+    "displayName": "Template B",
+    "description": "用途B向けテンプレート",
+    "source": "https://docs.google.com/presentation/d/SLIDES_ID_B/edit"
+  }
+}
