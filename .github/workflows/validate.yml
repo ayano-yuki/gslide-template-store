@@ -1,0 +1,36 @@
+name: Validate template release
+
+on:
+  push:
+    paths:
+      - "templates/**"
+      - "CHANGELOG.md"
+      - "config/templates.json"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate template files
+        run: |
+          set -eu
+
+          for dir in templates/*; do
+            [ -d "$dir" ] || continue
+
+            name="$(basename "$dir")"
+
+            test -f "$dir/latest.pptx"
+            test -f "$dir/latest.pdf"
+          done
+
+      - name: Validate config
+        run: |
+          python -m json.tool config/templates.json >/dev/null
+
+      - name: Validate changelog exists
+        run: |
+          test -s CHANGELOG.md
