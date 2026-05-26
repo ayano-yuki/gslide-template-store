@@ -1,19 +1,3 @@
-const CONFIG = {
-  owner: 'ayano-yuki',
-  repo: 'gslide-template-store',
-  branch: 'main',
-  templates: {
-    'template-a': {
-      slidesId: 'SLIDES_ID_A',
-      repoDir: 'templates/template-a'
-    },
-    'template-b': {
-      slidesId: 'SLIDES_ID_B',
-      repoDir: 'templates/template-b'
-    }
-  }
-};
-
 function onOpen() {
   SlidesApp.getUi()
     .createMenu('Template Release')
@@ -41,7 +25,7 @@ function releaseTemplate() {
   const version = promptText(ui, 'Version', 'v1.2.0');
   if (!version) return;
 
-  if (!/^v\\d+\\.\\d+\\.\\d+$/.test(version)) {
+  if (!/^v\d+\.\d+\.\d+$/.test(version)) {
     ui.alert('Version must be like v1.2.0');
     return;
   }
@@ -50,40 +34,68 @@ function releaseTemplate() {
     .getScriptProperties()
     .getProperty('GITHUB_TOKEN');
 
-  const pptx = exportSlides(template.slidesId, 'pptx');
-  const pdf = exportSlides(template.slidesId, 'pdf');
+  if (!token) {
+    ui.alert('Missing script property: GITHUB_TOKEN');
+    return;
+  }
 
   const baseName = `${templateName}_${version}`;
+  const versionedPptxPath = `${template.repoDir}/${baseName}.pptx`;
+  const versionedPdfPath = `${template.repoDir}/${baseName}.pdf`;
+  const latestPptxPath = `${template.repoDir}/latest.pptx`;
+  const latestPdfPath = `${template.repoDir}/latest.pdf`;
 
-  putGitHubFile({
-    path: `${template.repoDir}/${baseName}.pptx`,
-    bytes: pptx,
-    message: `release: ${templateName} ${version} pptx`,
-    token
-  });
+  try {
+    assertGitHubFileDoesNotExist({
+      path: versionedPptxPath,
+      token
+    });
 
-  putGitHubFile({
-    path: `${template.repoDir}/${baseName}.pdf`,
-    bytes: pdf,
-    message: `release: ${templateName} ${version} pdf`,
-    token
-  });
+    assertGitHubFileDoesNotExist({
+      path: versionedPdfPath,
+      token
+    });
 
-  putGitHubFile({
-    path: `${template.repoDir}/latest.pptx`,
-    bytes: pptx,
-    message: `chore: update ${templateName} latest pptx`,
-    token
-  });
+    const pptx = exportSlides(template.slidesId, 'pptx');
+    const pdf = exportSlides(template.slidesId, 'pdf');
 
-  putGitHubFile({
-    path: `${template.repoDir}/latest.pdf`,
-    bytes: pdf,
-    message: `chore: update ${templateName} latest pdf`,
-    token
-  });
+    putGitHubFile({
+      path: versionedPptxPath,
+      bytes: pptx,
+      message: `release: ${templateName} ${version} pptx`,
+      token,
+      overwrite: CONFIG.release.versionedOverwrite
+    });
 
-  ui.alert(`Released ${templateName} ${version}`);
+    putGitHubFile({
+      path: versionedPdfPath,
+      bytes: pdf,
+      message: `release: ${templateName} ${version} pdf`,
+      token,
+      overwrite: CONFIG.release.versionedOverwrite
+    });
+
+    putGitHubFile({
+      path: latestPptxPath,
+      bytes: pptx,
+      message: `chore: update ${templateName} latest pptx`,
+      token,
+      overwrite: CONFIG.release.latestOverwrite
+    });
+
+    putGitHubFile({
+      path: latestPdfPath,
+      bytes: pdf,
+      message: `chore: update ${templateName} latest pdf`,
+      token,
+      overwrite: CONFIG.release.latestOverwrite
+    });
+
+    ui.alert(`Released ${templateName} ${version}`);
+  } catch (error) {
+    ui.alert(`Release failed: ${error.message || error}`);
+    throw error;
+  }
 }
 
 function promptText(ui, title, message) {
@@ -102,4 +114,92 @@ function exportSlides(slidesId, format) {
   });
 
   return response.getBlob().getBytes();
+}
+
+function putGitHubFile({ path, bytes, message, token, overwrite }) {
+  const sha = getExistingGitHubFileSha({
+    path,
+    token
+  });
+
+  if (sha && !overwrite) {
+    throw new Error(`Refusing to overwrite immutable release artifact: ${path}`);
+  }
+
+  const payload = {
+    message,
+    content: Utilities.base64Encode(bytes),
+    branch: CONFIG.github.branch
+  };
+
+  if (sha) {
+    payload.sha = sha;
+  }
+
+  const response = UrlFetchApp.fetch(gitHubContentsUrl(path), {
+    method: 'put',
+    contentType: 'application/json',
+    headers: gitHubHeaders(token),
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  const status = response.getResponseCode();
+  if (status !== 200 && status !== 201) {
+    throw new Error(`GitHub upload failed (${status}) for ${path}: ${response.getContentText()}`);
+  }
+}
+
+function getExistingGitHubFileSha({ path, token }) {
+  const response = UrlFetchApp.fetch(`${gitHubContentsUrl(path)}?ref=${encodeURIComponent(CONFIG.github.branch)}`, {
+    method: 'get',
+    headers: gitHubHeaders(token),
+    muteHttpExceptions: true
+  });
+
+  const status = response.getResponseCode();
+  if (status === 404) {
+    return null;
+  }
+
+  if (status !== 200) {
+    throw new Error(`GitHub file lookup failed (${status}) for ${path}: ${response.getContentText()}`);
+  }
+
+  const body = JSON.parse(response.getContentText());
+  if (!body.sha) {
+    throw new Error(`GitHub file lookup did not return a sha for ${path}`);
+  }
+
+  return body.sha;
+}
+
+function assertGitHubFileDoesNotExist({ path, token }) {
+  const sha = getExistingGitHubFileSha({
+    path,
+    token
+  });
+
+  if (sha) {
+    throw new Error(`Versioned release artifact already exists: ${path}`);
+  }
+}
+
+function gitHubContentsUrl(path) {
+  return `https://api.github.com/repos/${CONFIG.github.owner}/${CONFIG.github.repo}/contents/${encodeGitHubPath(path)}`;
+}
+
+function encodeGitHubPath(path) {
+  return path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/');
+}
+
+function gitHubHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
 }
